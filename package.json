@@ -1,0 +1,24 @@
+{
+  "name": "inventory-platform",
+  "version": "0.1.0",
+  "description": "Universal Inventory & Commerce Ops Platform",
+  "private": true,
+  "workspaces": {
+    "packages": [
+      "apps/*",
+      "packages/*"
+    ]
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "db:migrate": "pnpm -F @inventory/db run migrate",
+    "db:studio": "pnpm -F @inventory/db run studio",
+    "db:seed": "pnpm -F @inventory/db run seed"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "typescript": "^5.3.3"
+  }
+}

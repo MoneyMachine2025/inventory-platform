@@ -1,0 +1,293 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// TENANTS & USERS
+// ============================================================================
+
+model Tenant {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  users     User[]
+  products  Product[]
+  variants  Variant[]
+  skus      Sku[]
+  warehouses Warehouse[]
+  bins      Bin[]
+  inventoryEvents InventoryEvent[]
+  costEvents CostEvent[]
+  automationRules AutomationRule[]
+  inventoryBalanceProjections InventoryBalanceProjection[]
+  inventoryReservationProjections InventoryReservationProjection[]
+
+  @@map("tenants")
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  email     String
+  role      String   @default("OPS") // OWNER, ADMIN, OPS, WAREHOUSE, FINANCE
+  createdAt DateTime @default(now()) @db.Timestamptz()
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+// ============================================================================
+// PRODUCT CATALOG
+// ============================================================================
+
+model Product {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  name      String
+  status    String   @default("ACTIVE") // ACTIVE, INACTIVE, DISCONTINUED
+  createdAt DateTime @default(now()) @db.Timestamptz()
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  variants Variant[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("products")
+}
+
+model Variant {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  productId String   @db.Uuid
+  name      String
+  attributes Json    @default("{}") // { "color": "red", "size": "M" }
+  createdAt DateTime @default(now()) @db.Timestamptz()
+
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product  Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  skus     Sku[]
+
+  @@unique([tenantId, productId, name])
+  @@index([tenantId])
+  @@index([productId])
+  @@map("variants")
+}
+
+model Sku {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @db.Uuid
+  variantId       String   @db.Uuid
+  skuCode         String
+  barcode         String?
+  trackSerial     Boolean  @default(false)
+  trackLot        Boolean  @default(false)
+  uom             String   @default("EA") // EA, BOX, PLT, LB, etc.
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @db.Timestamptz()
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  variant Variant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, skuCode])
+  @@index([tenantId])
+  @@index([variantId])
+  @@map("skus")
+}
+
+// ============================================================================
+// WAREHOUSE & LOCATIONS
+// ============================================================================
+
+model Warehouse {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  name      String
+  country   String
+  region    String
+  timezone  String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz()
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bins   Bin[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("warehouses")
+}
+
+model Bin {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  warehouseId String   @db.Uuid
+  code        String
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.Timestamptz()
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, warehouseId, code])
+  @@index([tenantId])
+  @@index([warehouseId])
+  @@map("bins")
+}
+
+// ============================================================================
+// INVENTORY LEDGER (APPEND-ONLY)
+// ============================================================================
+
+model InventoryEvent {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @db.Uuid
+  eventType       String   // RECEIPT, TRANSFER_OUT, TRANSFER_IN, RESERVE, UNRESERVE, SHIP, RETURN, ADJUSTMENT, QUARANTINE_IN, QUARANTINE_OUT
+  effectiveAt     DateTime @db.Timestamptz() // Economic time
+  recordedAt      DateTime @default(now()) @db.Timestamptz() // Ingestion time
+  skuId           String   @db.Uuid
+  warehouseId     String   @db.Uuid
+  binId           String?  @db.Uuid
+  lotCode         String?
+  serialCode      String?  // if track_serial, one row per serial movement OR enforce qty=1
+  qtyDelta        Decimal  @db.Decimal(19, 4)
+  sourceSystem    String
+  sourceRef       String
+  idempotencyKey  String
+  metadata        Json    @default("{}")
+  createdAt       DateTime @default(now()) @db.Timestamptz()
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Non-zero qty constraint enforced at application level
+  // Unique idempotency constraint
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId])
+  @@index([skuId])
+  @@index([warehouseId])
+  @@index([effectiveAt])
+  @@index([eventType])
+  @@index([serialCode]) // For serial tracking queries
+  @@index([lotCode]) // For lot tracking queries
+  @@map("inventory_events")
+}
+
+// ============================================================================
+// COST LEDGER (APPEND-ONLY)
+// ============================================================================
+
+model CostEvent {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @db.Uuid
+  costType        String   // FREIGHT, INSURANCE, DUTY, BROKERAGE, INBOUND_SHIPPING, WAREHOUSE_FEE, OTHER
+  currency        String
+  amount          Decimal  @db.Decimal(19, 4)
+  fxRate          Decimal? @db.Decimal(19, 8)
+  effectiveAt     DateTime @db.Timestamptz()
+  idempotencyKey  String
+  metadata        Json    @default("{}")
+  createdAt       DateTime @default(now()) @db.Timestamptz()
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId])
+  @@index([costType])
+  @@index([effectiveAt])
+  @@map("cost_events")
+}
+
+// ============================================================================
+// PROJECTIONS (MATERIALIZED READ MODELS)
+// ============================================================================
+
+model InventoryBalanceProjection {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  skuId       String   @db.Uuid
+  warehouseId String   @db.Uuid
+  binId       String?  @db.Uuid
+  onHand      Decimal  @db.Decimal(19, 4)
+  reserved    Decimal  @db.Decimal(19, 4)
+  available   Decimal  @db.Decimal(19, 4) // on_hand - reserved
+  lastUpdated DateTime @default(now()) @db.Timestamptz()
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, skuId, warehouseId, binId])
+  @@index([tenantId, skuId, warehouseId])
+  @@index([tenantId, warehouseId])
+  @@map("inventory_balance_projections")
+}
+
+model InventoryReservationProjection {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  skuId       String   @db.Uuid
+  warehouseId String   @db.Uuid
+  reserved    Decimal  @db.Decimal(19, 4)
+  lastUpdated DateTime @default(now()) @db.Timestamptz()
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, skuId, warehouseId])
+  @@index([tenantId, skuId])
+  @@index([tenantId, warehouseId])
+  @@map("inventory_reservation_projections")
+}
+
+// ============================================================================
+// AUTOMATION
+// ============================================================================
+
+model AutomationRule {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @db.Uuid
+  name       String
+  enabled    Boolean  @default(true)
+  ruleType   String   // REORDER, STOCKOUT_ALERT, LOW_INVENTORY, etc.
+  trigger    Json    // { "type": "inventory_level_change", ... }
+  condition  Json    // { "field": "inventory", "op": "lt", "value": 10 }
+  action     Json    // { "type": "create_suggestion", "actionType": "reorder" }
+  metadata   Json    @default("{}")
+  createdAt  DateTime @default(now()) @db.Timestamptz()
+  updatedAt  DateTime @updatedAt @db.Timestamptz()
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([enabled])
+  @@map("automation_rules")
+}
+
+// ============================================================================
+// AUTOMATION SUGGESTIONS (OUTPUT OF RULES)
+// ============================================================================
+
+model AutomationSuggestion {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @db.Uuid
+  ruleId     String   @db.Uuid
+  skuId      String   @db.Uuid
+  warehouseId String  @db.Uuid
+  suggestionType String // REORDER, TRANSFER, etc.
+  payload    Json    // { "quantity": 50, "supplier_id": "..." }
+  status     String  @default("PENDING") // PENDING, ACCEPTED, REJECTED, EXPIRED
+  expiresAt  DateTime @db.Timestamptz()
+  createdAt  DateTime @default(now()) @db.Timestamptz()
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("automation_suggestions")
+}
