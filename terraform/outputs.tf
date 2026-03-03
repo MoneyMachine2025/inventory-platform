@@ -14,23 +14,13 @@ output "ecr_repository_url" {
 }
 
 output "rds_endpoint" {
-  description = "RDS cluster endpoint"
-  value       = aws_rds_cluster.main.endpoint
+  description = "RDS instance endpoint"
+  value       = aws_db_instance.main.endpoint
 }
 
-output "rds_reader_endpoint" {
-  description = "RDS cluster reader endpoint"
-  value       = aws_rds_cluster.main.reader_endpoint
-}
-
-output "redis_endpoint" {
-  description = "ElastiCache Redis endpoint"
-  value       = aws_elasticache_cluster.main.cache_nodes[0].address
-}
-
-output "redis_port" {
-  description = "ElastiCache Redis port"
-  value       = aws_elasticache_cluster.main.port
+output "rds_database_name" {
+  description = "RDS database name"
+  value       = aws_db_instance.main.db_name
 }
 
 output "inventory_events_queue_url" {
@@ -63,10 +53,7 @@ output "db_password_secret_arn" {
   value       = aws_secretsmanager_secret.db_password.arn
 }
 
-output "cloudwatch_dashboard_url" {
-  description = "CloudWatch dashboard URL"
-  value       = "https://console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards:name=${aws_cloudwatch_dashboard.main.dashboard_name}"
-}
+
 
 output "ecs_cluster_name" {
   description = "ECS cluster name"

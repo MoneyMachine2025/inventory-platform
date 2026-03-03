@@ -61,5 +61,17 @@ variable "api_desired_count" {
 variable "alert_email" {
   description = "Email for CloudWatch alarms"
   type        = string
-  default     = "alerts@example.com"
+  default     = "rykoffofficial@gmail.com"
+}
+
+variable "enable_redis" {
+  description = "Enable ElastiCache Redis (staging=false, prod=true)"
+  type        = bool
+  default     = false
+}
+
+variable "enable_autoscaling" {
+  description = "Enable ECS autoscaling (staging=false, prod=true)"
+  type        = bool
+  default     = false
 }

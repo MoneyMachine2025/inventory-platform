@@ -13,3 +13,7 @@ coverage/
 .next/
 out/
 pnpm-lock.yaml
+.terraform/
+.terraform/
+*.tfstate
+*.tfstate.backup

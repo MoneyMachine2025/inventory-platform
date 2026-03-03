@@ -110,7 +110,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 
   dimensions = {
-    DBClusterIdentifier = aws_rds_cluster.main.cluster_identifier
+    DBInstanceIdentifier = aws_db_instance.main.identifier
   }
 }
 
@@ -128,7 +128,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 
   dimensions = {
-    DBClusterIdentifier = aws_rds_cluster.main.cluster_identifier
+    DBInstanceIdentifier = aws_db_instance.main.identifier
   }
 }
 
@@ -167,71 +167,5 @@ resource "aws_cloudwatch_metric_alarm" "sqs_projection_dlq" {
   }
 }
 
-# ============================================================================
-# CLOUDWATCH DASHBOARD
-# ============================================================================
-
-resource "aws_cloudwatch_dashboard" "main" {
-  dashboard_name = "${var.app_name}-dashboard"
-
-  dashboard_body = jsonencode({
-    widgets = [
-      {
-        type = "metric"
-        properties = {
-          metrics = [
-            ["AWS/ApplicationELB", "TargetResponseTime", { stat = "Average" }],
-            [".", "RequestCount", { stat = "Sum" }],
-            [".", "HTTPCode_Target_5XX_Count", { stat = "Sum" }],
-            [".", "UnHealthyHostCount", { stat = "Average" }]
-          ]
-          period = 60
-          stat   = "Average"
-          region = var.aws_region
-          title  = "ALB Metrics"
-        }
-      },
-      {
-        type = "metric"
-        properties = {
-          metrics = [
-            ["AWS/ECS", "CPUUtilization", { dimensions = { ServiceName = aws_ecs_service.api.name } }],
-            [".", "MemoryUtilization", { dimensions = { ServiceName = aws_ecs_service.api.name } }]
-          ]
-          period = 60
-          stat   = "Average"
-          region = var.aws_region
-          title  = "ECS Service Metrics"
-        }
-      },
-      {
-        type = "metric"
-        properties = {
-          metrics = [
-            ["AWS/RDS", "CPUUtilization", { dimensions = { DBClusterIdentifier = aws_rds_cluster.main.cluster_identifier } }],
-            [".", "DatabaseConnections", { dimensions = { DBClusterIdentifier = aws_rds_cluster.main.cluster_identifier } }],
-            [".", "FreeStorageSpace", { dimensions = { DBClusterIdentifier = aws_rds_cluster.main.cluster_identifier } }]
-          ]
-          period = 60
-          stat   = "Average"
-          region = var.aws_region
-          title  = "RDS Metrics"
-        }
-      },
-      {
-        type = "metric"
-        properties = {
-          metrics = [
-            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", { dimensions = { QueueName = aws_sqs_queue.inventory_events.name } }],
-            [".", "NumberOfMessagesSent", { dimensions = { QueueName = aws_sqs_queue.inventory_events.name } }],
-            [".", "NumberOfMessagesReceived", { dimensions = { QueueName = aws_sqs_queue.inventory_events.name } }]
-          ]
-          period = 60
-          stat   = "Sum"
-          region = var.aws_region
-          title  = "SQS Inventory Events"
-        }
-      }
-    ]
-  })
-}
+# CloudWatch dashboard removed (formatting issues with metrics)
+# Can add back later when needed. CloudWatch logs available via UI.

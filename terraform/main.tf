@@ -6,13 +6,8 @@ terraform {
       version = "~> 5.0"
     }
   }
-  backend "s3" {
-    bucket         = "inventory-platform-terraform-state"
-    key            = "prod/terraform.tfstate"
-    region         = "us-east-1"
-    encrypt        = true
-    dynamodb_table = "terraform-locks"
-  }
+  # Backend will be configured in prod once S3 bucket created
+  # For now, local state is fine for staging
 }
 
 provider "aws" {
@@ -74,30 +69,8 @@ resource "aws_subnet" "private" {
   }
 }
 
-# Elastic IPs for NAT Gateways
-resource "aws_eip" "nat" {
-  count  = 2
-  domain = "vpc"
-
-  tags = {
-    Name = "${var.app_name}-eip-${count.index + 1}"
-  }
-
-  depends_on = [aws_internet_gateway.main]
-}
-
-# NAT Gateways (for private subnet egress)
-resource "aws_nat_gateway" "main" {
-  count         = 2
-  allocation_id = aws_eip.nat[count.index].id
-  subnet_id     = aws_subnet.public[count.index].id
-
-  tags = {
-    Name = "${var.app_name}-nat-${count.index + 1}"
-  }
-
-  depends_on = [aws_internet_gateway.main]
-}
+# No NAT gateways - using VPC endpoints instead for staging (cheaper)
+# If endpoints hit blocker, can add NAT later
 
 # Route Table for Public Subnets
 resource "aws_route_table" "public" {
@@ -119,15 +92,13 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Route Tables for Private Subnets
+# Route Tables for Private Subnets (no NAT gateway, using VPC endpoints)
 resource "aws_route_table" "private" {
   count  = 2
   vpc_id = aws_vpc.main.id
 
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main[count.index].id
-  }
+  # VPC endpoints provide egress to AWS services; no default route to internet
+  # This keeps private subnets truly private
 
   tags = {
     Name = "${var.app_name}-private-rt-${count.index + 1}"
@@ -243,31 +214,7 @@ resource "aws_security_group" "rds" {
   }
 }
 
-# ElastiCache Security Group
-resource "aws_security_group" "redis" {
-  name_prefix = "redis-"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port       = 6379
-    to_port         = 6379
-    protocol        = "tcp"
-    security_groups = [aws_security_group.ecs.id]
-    description     = "Redis from ECS"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "All outbound traffic"
-  }
-
-  tags = {
-    Name = "${var.app_name}-redis-sg"
-  }
-}
+# No Redis for staging MVP
 
 # ============================================================================
 # RDS POSTGRESQL
@@ -296,103 +243,45 @@ resource "aws_rds_cluster_parameter_group" "main" {
   }
 }
 
-resource "aws_rds_cluster" "main" {
-  cluster_identifier            = "${var.app_name}-cluster"
-  engine                        = "aurora-postgresql"
-  engine_version                = "16.1"
-  database_name                 = "inventory"
-  master_username               = "postgres"
-  master_password               = random_password.db_password.result
-  db_subnet_group_name          = aws_db_subnet_group.main.name
-  vpc_security_group_ids        = [aws_security_group.rds.id]
-  backup_retention_period       = 14
-  preferred_backup_window       = "03:00-04:00"
-  preferred_maintenance_window  = "mon:04:00-mon:05:00"
-  enabled_cloudwatch_logs_exports = ["postgresql"]
-  storage_encrypted             = true
-  skip_final_snapshot           = false
-  final_snapshot_identifier     = "${var.app_name}-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
-
-  tags = {
-    Name = "${var.app_name}-db-cluster"
-  }
-}
-
-resource "aws_rds_cluster_instance" "main" {
-  count              = 2
-  identifier         = "${var.app_name}-instance-${count.index + 1}"
-  cluster_identifier = aws_rds_cluster.main.id
-  instance_class     = "db.t4g.small"
-  engine             = aws_rds_cluster.main.engine
-  engine_version     = aws_rds_cluster.main.engine_version
-
-  performance_insights_enabled    = true
-  performance_insights_retention_period = 7
-  monitoring_interval             = 60
-  monitoring_role_arn             = aws_iam_role.rds_monitoring.arn
-
-  tags = {
-    Name = "${var.app_name}-db-instance-${count.index + 1}"
-  }
-}
-
-# RDS Monitoring Role
-resource "aws_iam_role" "rds_monitoring" {
-  name_prefix = "rds-monitoring-"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "monitoring.rds.amazonaws.com"
-        }
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "rds_monitoring" {
-  role       = aws_iam_role.rds_monitoring.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
-}
-
-# ============================================================================
-# ELASTICACHE REDIS
-# ============================================================================
-
-resource "aws_elasticache_subnet_group" "main" {
-  name       = "${var.app_name}-redis-subnet-group"
-  subnet_ids = aws_subnet.private[*].id
-
-  tags = {
-    Name = "${var.app_name}-redis-subnet-group"
-  }
-}
-
-resource "aws_elasticache_cluster" "main" {
-  cluster_id           = "${var.app_name}-redis"
-  engine               = "redis"
-  engine_version       = "7.0"
-  node_type            = "cache.t4g.small"
-  num_cache_nodes      = 1
-  parameter_group_name = "default.redis7"
-  port                 = 6379
-  subnet_group_name    = aws_elasticache_subnet_group.main.name
-  security_group_ids   = [aws_security_group.redis.id]
+# Single-AZ RDS for staging (cheap, sufficient for MVP validation)
+resource "aws_db_instance" "main" {
+  identifier            = "${var.app_name}-db"
+  engine               = "postgres"
+  # Use latest available version (Terraform will select)
+  instance_class       = "db.t4g.micro"  # Cheapest option for MVP
+  allocated_storage    = 20              # GB (can grow to 50GB if needed)
+  storage_type         = "gp3"
+  storage_encrypted    = true
   
-  automatic_failover_enabled = false
-  at_rest_encryption_enabled = true
-  transit_encryption_enabled = false  # Can enable with auth token later
-
-  notification_topic_arn = aws_sns_topic.alerts.arn
-
+  db_name              = "inventory"
+  username             = "postgres"
+  password             = random_password.db_password.result
+  
+  db_subnet_group_name   = aws_db_subnet_group.main.name
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  
+  multi_az               = false  # Staging: single-AZ for cost
+  publicly_accessible    = false
+  
+  backup_retention_period = 7  # Staging: 7 days (prod: 14)
+  backup_window          = "03:00-04:00"
+  maintenance_window     = "mon:04:00-mon:05:00"
+  
+  enabled_cloudwatch_logs_exports = ["postgresql"]
+  
+  skip_final_snapshot       = false
+  final_snapshot_identifier = "${var.app_name}-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
+  
   tags = {
-    Name = "${var.app_name}-redis"
+    Name = "${var.app_name}-db"
   }
 }
+
+# RDS monitoring via CloudWatch is sufficient for staging
+
+# Redis: Not needed for staging MVP
+# Projections in Postgres already achieve <20ms target
+# Can add via CacheProvider abstraction in Phase 2 if needed
 
 # ============================================================================
 # SQS QUEUES
@@ -451,8 +340,9 @@ resource "aws_sqs_queue" "projection_jobs" {
 # ============================================================================
 
 resource "random_password" "db_password" {
-  length  = 32
-  special = true
+  length            = 32
+  special           = true
+  override_special  = "_!#$%&*()-=+[]{}<>:?"  # Only RDS-safe special chars
 }
 
 resource "aws_secretsmanager_secret" "db_password" {
@@ -481,10 +371,7 @@ resource "aws_secretsmanager_secret" "app_secrets" {
 resource "aws_secretsmanager_secret_version" "app_secrets" {
   secret_id = aws_secretsmanager_secret.app_secrets.id
   secret_string = jsonencode({
-    DATABASE_URL = "postgresql://postgres:${random_password.db_password.result}@${aws_rds_cluster.main.endpoint}:5432/inventory"
-    REDIS_URL    = "redis://${aws_elasticache_cluster.main.cache_nodes[0].address}:6379"
-    REDIS_HOST   = aws_elasticache_cluster.main.cache_nodes[0].address
-    REDIS_PORT   = 6379
+    DATABASE_URL = "postgresql://postgres:${random_password.db_password.result}@${aws_db_instance.main.endpoint}:5432/inventory"
     NODE_ENV     = "production"
   })
 }
@@ -501,7 +388,7 @@ resource "aws_s3_bucket" "terraform_state" {
   }
 }
 
-resource "aws_s3_bucket_encryption" "terraform_state" {
+resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
   rule {
